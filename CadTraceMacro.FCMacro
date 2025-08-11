@@ -1,0 +1,111 @@
+import FreeCAD, FreeCADGui
+import sys
+import subprocess
+import importlib.util
+import os
+import site
+import ImportGui
+import FreeCAD
+import importDXF
+
+from pathlib import Path
+from PySide2 import QtWidgets
+
+# Add user site-packages to sys.path so FreeCAD can find pip --user installs
+user_site = site.getusersitepackages()
+if user_site not in sys.path:
+    sys.path.append(user_site)
+FreeCAD.Console.PrintMessage(f"Added user site-packages to sys.path:\n  {user_site}\n")
+
+# Required dependencies
+required_packages = ["opencv-python", "ezdxf", "Pillow", "svgpathtools"]
+
+def packages_installed(packages):
+    for pkg in packages:
+        if importlib.util.find_spec(pkg) is None:
+            return False
+    return True
+
+def get_embedded_python():
+    candidates = [
+        os.path.join(sys.exec_prefix, "bin", "python"),
+        os.path.join(sys.exec_prefix, "usr", "bin", "python"),
+        os.path.join(sys.exec_prefix, "usr", "libexec", "python3.11"),
+        os.path.join(sys.exec_prefix, "lib", "python3.11"),
+    ]
+    for path in candidates:
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    return None
+
+def install_packages(python_exe, packages):
+    try:
+        FreeCAD.Console.PrintMessage(f"Installing packages: {packages}\n")
+        subprocess.check_call([
+            python_exe, "-m", "pip", "install", "--user", *packages
+        ])
+        FreeCAD.Console.PrintMessage("Dependencies installed successfully.\n")
+    except Exception as e:
+        FreeCAD.Console.PrintError(f"Failed to install dependencies: {e}\n")
+
+def get_image_file():
+    app = QtWidgets.QApplication.instance()
+    if app is None:
+        app = QtWidgets.QApplication([])
+    dialog = QtWidgets.QFileDialog()
+    dialog.setWindowTitle("Select image to trace")
+    dialog.setNameFilters(["Images (*.png *.jpg *.bmp *.tif)"])
+    dialog.setFileMode(QtWidgets.QFileDialog.ExistingFile)
+    if dialog.exec():
+        files = dialog.selectedFiles()
+        if files:
+            return files[0]
+    return None
+
+# Install missing packages if needed
+if not packages_installed(required_packages):
+    FreeCAD.Console.PrintMessage("Some dependencies are missing. Installing...\n")
+    python_exe = get_embedded_python()
+    if python_exe is None:
+        FreeCAD.Console.PrintError("Embedded Python interpreter not found! Please install dependencies manually.\n")
+    else:
+        FreeCAD.Console.PrintMessage(f"Using embedded Python at: {python_exe}\n")
+        install_packages(python_exe, required_packages)
+else:
+    FreeCAD.Console.PrintMessage("All dependencies already installed.\n")
+
+# Import linux_cadtrace module now
+try:
+    import linux_cadtrace
+except ImportError as e:
+    FreeCAD.Console.PrintError(f"Could not import linux_cadtrace module: {e}\n")
+    sys.exit()
+
+# Select image file via dialog
+img_path = get_image_file()
+if not img_path:
+    FreeCAD.Console.PrintMessage("No file selected; macro canceled.\n")
+    sys.exit()
+
+base = os.path.splitext(img_path)[0]
+svg_path = base + ".svg"
+dxf_path = base + ".dxf"
+
+try:
+	linux_cadtrace.main(image_path=img_path)
+
+except Exception as e:
+    FreeCAD.Console.PrintError(f"Tracing failed: {e}\n")
+    sys.exit()
+
+# Insert DXF into FreeCAD document
+if not FreeCAD.ActiveDocument:
+    FreeCAD.newDocument()
+
+from freecad import module_io
+module_io.OpenInsertObject("importDXF", dxf_path, "insert", "Unnamed1")
+
+
+FreeCAD.Console.PrintMessage(
+    f"Trace complete:\n  SVG saved at: {svg_path}\n  DXF imported: {dxf_path}\n"
+)
